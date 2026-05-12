@@ -14,21 +14,26 @@ export class App {
   fb = inject(FormBuilder);
 
   view = signal<'home' | 'learn' | 'manager'>('home');
-  activeGame = signal<'flashcards' | 'typing' | null>(null);
+  activeGame = signal<'flashcards' | 'typing' | 'multiple-choice' | 'spelling-letters' | 'spelling-hebrew' | null>(null);
 
-  stats = signal<UserStats>({ score: 450, streak: 12, coins: 450, level: 3 });
-  words = signal<Word[]>([
-    { hebrew: 'חללית', english: 'spaceship', status: 'new' },
-    { hebrew: 'אסטרונאוט', english: 'astronaut', status: 'new' },
-    { hebrew: 'כבידה', english: 'gravity', status: 'learning' },
-    { hebrew: 'יקום', english: 'universe', status: 'new' },
-    { hebrew: 'תגלית', english: 'discovery', status: 'mastered' },
-  ]);
+  theme = signal<'light' | 'dark'>('light');
+
+  stats = signal<UserStats>({ score: 0, streak: 0, coins: 0, level: 1 });
+  words = signal<Word[]>([]);
 
   // Flashcards State
   currentWordIndex = signal(0);
   cardFlipped = signal(false);
-  currentWord = computed(() => this.words()[this.currentWordIndex()]);
+  currentWord = computed(() => this.words()[this.currentWordIndex()] || null);
+  flashcardMode = signal<'he-to-en' | 'en-to-he'>('he-to-en');
+
+  // Multi-choice state
+  mcOptions = signal<string[]>([]);
+  
+  // Distractor spelling
+  spellingLetters = signal<{char: string, id: number}[]>([]);
+  spellingTarget = signal<string>('');
+  spellingCurrent = signal<string>('');
 
   // Typing State
   typingForm = this.fb.group({ answer: ['', Validators.required] });
@@ -48,10 +53,37 @@ export class App {
     }
   }
 
-  startGame(game: 'flashcards' | 'typing') {
+  startGame(game: 'flashcards' | 'typing' | 'multiple-choice' | 'spelling-letters' | 'spelling-hebrew') {
+    if (this.words().length === 0 && game !== 'flashcards') {
+        alert('יש להוסיף מילים למאגר (במסך הכספת) לפני התחלת משחקים!');
+        this.view.set('manager');
+        return;
+    }
     this.view.set('learn');
     this.activeGame.set(game);
     this.resetGameStates();
+  }
+
+  toggleTheme() {
+    this.theme.update(t => t === 'light' ? 'dark' : 'light');
+    const isDark = this.theme() === 'dark';
+    if (isDark) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }
+
+  speak(text: string, lang: 'en-US' | 'he-IL') {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel(); // limit overlap
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = lang;
+      if (lang === 'he-IL') {
+         utterance.rate = 0.9;
+      }
+      window.speechSynthesis.speak(utterance);
+    }
   }
 
   resetGameStates() {
@@ -61,6 +93,99 @@ export class App {
     this.cardFlipped.set(false);
     this.typingFeedback.set(null);
     this.typingForm.reset();
+    
+    if (this.activeGame() === 'multiple-choice') {
+      this.generateMCOptions();
+    } else if (this.activeGame() === 'spelling-letters') {
+      this.generateSpellingLetters();
+    } else if (this.activeGame() === 'spelling-hebrew') {
+      this.generateHebrewSpelling();
+    }
+  }
+
+  generateMCOptions() {
+    const word = this.currentWord();
+    if (!word) return;
+    const allWords = this.words();
+    // In multi-choice, we show english, choose hebrew (or vice versa, let's do random)
+    // we need 5 options
+    let options = new Set<string>();
+    options.add(word.hebrew); // We assume showing english, select hebrew
+    while(options.size < 5 && options.size < allWords.length) {
+      const rw = allWords[Math.floor(Math.random() * allWords.length)];
+      options.add(rw.hebrew);
+    }
+    this.mcOptions.set(Array.from(options).sort(() => Math.random() - 0.5));
+  }
+
+  checkMCOption(opt: string) {
+    if (opt === this.currentWord()?.hebrew) {
+      this.typingFeedback.set('correct');
+      this.stats.update(s => ({ ...s, coins: s.coins + 5 }));
+      this.playSound('success');
+      setTimeout(() => this.resetGameStates(), 1000);
+    } else {
+      this.typingFeedback.set('incorrect');
+      this.playSound('error');
+    }
+  }
+
+  generateSpellingLetters() {
+    const word = this.currentWord();
+    if (!word) return;
+    const target = word.english.toUpperCase();
+    this.spellingTarget.set(target);
+    this.spellingCurrent.set('');
+    
+    let chars = target.split('');
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    // add 4 distractors
+    for(let i=0; i<4; i++) {
+        chars.push(alphabet[Math.floor(Math.random()*alphabet.length)]);
+    }
+    chars.sort(() => Math.random() - 0.5);
+    this.spellingLetters.set(chars.map((c, i) => ({char: c, id: i})));
+  }
+
+  selectSpellingLetter(l: {char: string, id: number}) {
+    const current = this.spellingCurrent();
+    const target = this.spellingTarget();
+    const nextExpected = target[current.length];
+    
+    if (l.char === nextExpected) {
+      this.spellingCurrent.set(current + l.char);
+      this.spellingLetters.update(arr => arr.filter(x => x.id !== l.id)); // remove it
+      
+      if (this.spellingCurrent() === target) {
+         this.typingFeedback.set('correct');
+         this.playSound('success');
+         this.stats.update(s => ({ ...s, coins: s.coins + 15 }));
+         setTimeout(() => {
+             this.cardFlipped.set(false);
+             this.resetGameStates();
+         }, 1000);
+      } else {
+        this.playSound('flip'); // click sound
+      }
+    } else {
+       this.typingFeedback.set('incorrect');
+       this.playSound('error');
+       setTimeout(() => this.typingFeedback.set(null), 800);
+    }
+  }
+
+  generateHebrewSpelling() {
+     const word = this.currentWord();
+     if (!word) return;
+     this.spellingTarget.set(word.hebrew); // we need to type hebrew
+  }
+
+
+  onHebrewSpellingSuccess() {
+     this.stats.update(s => ({ ...s, coins: s.coins + 10 }));
+     this.playSound('success');
+     this.resetGameStates();
+     this.typingForm.reset();
   }
 
   // Flashcards Actions
@@ -81,8 +206,10 @@ export class App {
     setTimeout(() => {
        this.cardFlipped.set(false);
        setTimeout(() => {
-          let nextIdx = (this.currentWordIndex() + 1) % this.words().length;
-          this.currentWordIndex.set(nextIdx);
+          if (this.words().length > 0) {
+            let nextIdx = (this.currentWordIndex() + 1) % this.words().length;
+            this.currentWordIndex.set(nextIdx);
+          }
        }, 300); // Wait for flip back
     }, 400);
   }
