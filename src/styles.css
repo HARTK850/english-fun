@@ -9,11 +9,14 @@
 
 body {
   font-family: var(--font-sans);
-  background-color: #0f172a; /* slate-900 */
 }
 
 .glass-panel {
-  @apply bg-white/5 backdrop-blur-xl border border-white/10;
+  @apply bg-black/5 dark:bg-white/5 backdrop-blur-xl border border-black/5 dark:border-white/10;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+}
+
+.dark .glass-panel {
   box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
 }
 
